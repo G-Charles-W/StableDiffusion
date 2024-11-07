@@ -18,7 +18,7 @@ class DownSampleBlock(nn.Module):
 
     def forward(self, x, temb):
         hidden_states = self.resnet1(x, temb)
-        hidden_states = self.resnet1(hidden_states, temb)
+        hidden_states = self.resnet2(hidden_states, temb)
         hidden_states = self.down_sample(hidden_states)
 
         return hidden_states

@@ -11,7 +11,9 @@ class AttnDownBlock(nn.Module):
                  groups: int = 32,
                  heads=84,
                  temb_channels: int = 896,
-                 eps: float = 1e-6, num_layers: int = 2):
+                 eps: float = 1e-6,
+                 num_layers: int = 2,
+                 residual_connect=False):
         super().__init__()
         resnets = []
         attentions = []
@@ -19,26 +21,15 @@ class AttnDownBlock(nn.Module):
         out_ch_s = [out_channels, out_channels]
         for i in range(num_layers):
             resnets.append(
-                ResnetBlock(
-                    in_channels=in_ch_s[i],
-                    out_channels=out_ch_s[i],
-                    temb_channels=temb_channels,
-                    eps=eps,
-                    groups=groups
-                )
-            )
+                ResnetBlock(in_channels=in_ch_s[i], out_channels=out_ch_s[i], temb_channels=temb_channels, eps=eps,
+                            groups=groups))
+
             attentions.append(
-                Attention(
-                    out_channels,
-                    heads=heads,
-                    eps=eps,
-                    bias=True,
-                )
-            )
+                Attention(out_channels, heads=heads, eps=eps, bias=True, residual_connect=residual_connect))
 
         self.attentions = nn.ModuleList(attentions)
         self.resnets = nn.ModuleList(resnets)
-        self.downsamplers = nn.Conv3d(out_channels, out_channels, kernel_size=3, stride=2, padding=1, bias=True)
+        self.down_sample = nn.Conv3d(out_channels, out_channels, kernel_size=3, stride=2, padding=1, bias=True)
 
     def forward(self, hidden_states, temb):
         output_states = ()
@@ -47,6 +38,9 @@ class AttnDownBlock(nn.Module):
             hidden_states = resnet(hidden_states, temb)
             hidden_states = attn(hidden_states)
             output_states = output_states + (hidden_states,)
+        hidden_states = self.down_sample(hidden_states)
+
+        return hidden_states
 
 
 class Attention(nn.Module):
@@ -55,7 +49,8 @@ class Attention(nn.Module):
                  groups: int = 32,
                  heads=84,
                  bias=True,
-                 eps: float = 1e-6):
+                 eps: float = 1e-6,
+                 residual_connect=False):
         super().__init__()
         self.group_norm = torch.nn.GroupNorm(num_groups=groups, num_channels=channels, eps=eps, affine=True)
         self.to_q = nn.Linear(channels, channels, bias=bias)
@@ -63,11 +58,12 @@ class Attention(nn.Module):
         self.to_v = nn.Linear(channels, channels, bias=bias)
         self.heads = heads
         self.to_out = nn.Linear(channels, channels, bias=True)
+        self.residual_connect = residual_connect
 
     def forward(self, hidden_states, encoder_hidden_states=None):
         residual = hidden_states
         batch_size, channel, height, width, length = hidden_states.shape
-        hidden_states = hidden_states.view(batch_size, channel, height * width*length).transpose(1, 2)
+        hidden_states = hidden_states.view(batch_size, channel, height * width * length).transpose(1, 2)
 
         batch_size, sequence_length, _ = hidden_states.shape
 
@@ -95,4 +91,7 @@ class Attention(nn.Module):
 
         hidden_states = self.to_out(hidden_states)
         hidden_states = hidden_states.transpose(-1, -2).reshape(batch_size, channel, height, width, length)
+
+        if self.residual_connect:
+            hidden_states += residual
         return hidden_states
