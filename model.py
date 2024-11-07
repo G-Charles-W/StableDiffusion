@@ -1,5 +1,6 @@
-from AttnDownBlock import AttnDownBlock
+from AttnBlock import AttnDownBlock
 from DownSampleBlock import DownSampleBlock
+from MiddleBlock import MiddleBlock
 from TimeEmbedding import Timesteps, TimestepEmbedding
 from torch import nn
 import torch
@@ -12,15 +13,18 @@ class Model(nn.Module):
         block_out_channels = (224, 448, 672, 896)
         self.conv1 = nn.Conv3d(in_channels, block_out_channels[0], kernel_size=3, stride=1, padding=1)
         down_block1 = DownSampleBlock(block_out_channels[0], block_out_channels[0])
-        attn_down1 = AttnDownBlock(block_out_channels[0], block_out_channels[1], heads=56, residual_connect=True)
-        attn_down2 = AttnDownBlock(block_out_channels[1], block_out_channels[2], heads=84, residual_connect=True)
-        attn_down3 = AttnDownBlock(block_out_channels[2], block_out_channels[3], heads=112, residual_connect=True)
+        attn_down1 = AttnDownBlock(block_out_channels[0], block_out_channels[1], head_dim=56, residual_connect=True)
+        attn_down2 = AttnDownBlock(block_out_channels[1], block_out_channels[2], head_dim=84, residual_connect=True)
+        attn_down3 = AttnDownBlock(block_out_channels[2], block_out_channels[3], head_dim=112, residual_connect=True,
+                                   down_sample=False)
 
         self.down_blocks = nn.ModuleList(
             [down_block1, attn_down1, attn_down2, attn_down3]
         )
         self.time_proj = Timesteps(block_out_channels[0], flip_sin_to_cos=True, downscale_freq_shift=0)
         self.time_embedding = TimestepEmbedding(224, 896)
+
+        self.mid_block = MiddleBlock(block_out_channels[3], block_out_channels[3])
 
     def forward(self, x, timestep):
 
@@ -34,17 +38,20 @@ class Model(nn.Module):
         t_emb = t_emb.to(dtype=x.dtype)
         emb = self.time_embedding(t_emb)
 
-        # 2. Down-sampling
-        out = ()
+        # 2. pre-process
         hidden_states = self.conv1(x)
+
+        # 3. Down-sampling
+        out = (hidden_states,)
         for i in range(4):
-            hidden_states = self.down_blocks[i](hidden_states, emb)
-            out += (hidden_states,)
+            hidden_states, res_samples = self.down_blocks[i](hidden_states, emb)
+            out += res_samples
         return out
 
 
-if __name__ == '__main__': 
+if __name__ == '__main__':
     model = Model(3).to("cuda")
-    sample = torch.randn(1, 3, 128, 128, 128).to("cuda")
+    sample = torch.randn(1, 3, 64, 64, 64).to("cuda")
     # timesteps = torch.tensor([1], dtype=torch.long).to("cuda")
-    model(sample, 1)
+    with torch.no_grad():
+        model(sample, 1)

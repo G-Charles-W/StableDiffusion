@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 from ResnetBlock import ResnetBlock
-from AttnDownBlock import Attention
+from AttnBlock import Attention
 
 
 class MiddleBlock(nn.Module):
