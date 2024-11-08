@@ -57,6 +57,7 @@ class AttnUpBlock(nn.Module):
 
     def __init__(self, in_channels,
                  out_channels,
+                 prev_output_channel,
                  groups: int = 32,
                  head_dim=8,
                  temb_channels: int = 896,
@@ -68,14 +69,16 @@ class AttnUpBlock(nn.Module):
 
         resnets = []
         attentions = []
-        in_ch_s = [in_channels, in_channels, in_channels]
-        out_ch_s = [in_channels, in_channels, out_channels]
         heads = out_channels // head_dim
         self.up_sample_flag = up_sample
 
         for i in range(num_layers):
+            resnet_in_channels = prev_output_channel if i == 0 else out_channels
+            res_skip_channels = in_channels if (i == num_layers - 1) else out_channels
+
             resnets.append(
-                ResnetBlock(in_channels=in_ch_s[i], out_channels=out_ch_s[i], temb_channels=temb_channels, eps=eps,
+                ResnetBlock(in_channels=resnet_in_channels + res_skip_channels,
+                            out_channels=out_channels, temb_channels=temb_channels, eps=eps,
                             groups=groups))
 
             attentions.append(
@@ -85,10 +88,10 @@ class AttnUpBlock(nn.Module):
         self.resnets = nn.ModuleList(resnets)
 
         if self.up_sample_flag:
-            self.up_sample = LoRACompatibleConv(in_channels, out_channels, 3, padding=1)
+            self.up_sample = nn.Conv3d(out_channels, out_channels, 3, padding=1, bias=True)
 
     def forward(self, hidden_states, res_hidden_states_tuple, temb):
-        output_states = ()
+        # output_states = ()
 
         for resnet, attn in zip(self.resnets, self.attentions):
             res_hidden_states = res_hidden_states_tuple[-1]
@@ -97,10 +100,12 @@ class AttnUpBlock(nn.Module):
 
             hidden_states = resnet(hidden_states, temb)
             hidden_states = attn(hidden_states)
+            # output_states = output_states + (hidden_states,)
 
         if self.up_sample_flag:
             hidden_states = F.interpolate(hidden_states, scale_factor=2.0, mode="nearest")
             hidden_states = self.up_sample(hidden_states)
+            # output_states = output_states + (hidden_states,)
 
         return hidden_states
 
@@ -159,28 +164,22 @@ class Attention(nn.Module):
         return hidden_states
 
 
-class LoRACompatibleConv(nn.Conv2d):
-    """
-    A convolutional layer that can be used with LoRA.
-    """
-
-    def __init__(self, *args, lora_layer=None, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.lora_layer = lora_layer
-
-    def set_lora_layer(self, lora_layer):
-        self.lora_layer = lora_layer
-
-    def forward(self, x):
-        if self.lora_layer is None:
-            # make sure to the functional Conv2D function as otherwise torch.compile's graph will break
-            # see: https://github.com/huggingface/diffusers/pull/4315
-            return F.conv3d(x, self.weight, self.bias, self.stride, self.padding, self.dilation, self.groups)
-        else:
-            return super().forward(x) + self.lora_layer(x)
-
-
 if __name__ == '__main__':
-    model = AttnUpBlock(896, 672).to("cuda")
+    dhs_chs = [224, 224, 224, 224, 448, 448, 448, 672, 672, 672, 896, 896]
+    dhs_size = [128, 128, 128, 64, 64, 64, 32, 32, 32, 16, 16, 16]
+    downsample_hidden_states = ()
+    attn1 = AttnUpBlock(672, 896, 896)
+    attn2 = AttnUpBlock(672, 896, 896)
+    attn3 = AttnUpBlock(672, 896, 896)
+    up1 = AttnUpBlock(672, 896, 896)
+
+    model = []
+    print(model)
+    for i in range(len(dhs_chs)):
+        ch = int(dhs_size[i]/2)
+        hidden_state = torch.randn(1, dhs_chs[i], ch, ch, ch).cuda()
+        downsample_hidden_states = downsample_hidden_states + (hidden_state,)
     x = torch.randn(1, 896, 8, 8, 8).to("cuda")
-    print(model(x).shape)
+    emb = torch.randn(1, 896).to("cuda")
+
+    print(model(x, downsample_hidden_states, emb).shape)
